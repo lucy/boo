@@ -88,9 +88,10 @@ fn file_next(r: &mut Option<impl BufRead>, buf: &mut String) -> io::Result<bool>
     })
 }
 
-struct Dedup {
+struct Dedup<W> {
     l: bool,
     b: String,
+    w: W,
 }
 
 fn get_prefix(s: &str) -> &str {
@@ -100,16 +101,21 @@ fn get_prefix(s: &str) -> &str {
     return s;
 }
 
-impl Dedup {
-    fn put(&mut self, w: &mut impl Write, b: &mut String) {
+impl<W: Write> Dedup<W> {
+    fn put(&mut self, b: &mut String) {
         if get_prefix(b) != get_prefix(&self.b) {
             if self.l {
-                w.write(self.b.as_bytes()).unwrap();
+                self.w.write(self.b.as_bytes()).unwrap();
             }
             self.l = true;
             swap(b, &mut self.b);
         }
         b.clear();
+    }
+    fn end(&mut self) {
+        if self.l {
+            self.w.write(self.b.as_bytes()).unwrap();
+        }
     }
 }
 
@@ -126,45 +132,43 @@ fn main() -> Result<()> {
         ORDER BY v.visit_date, p.url"#,
     )?;
     let mut hr = hs.query([])?;
-    let mut out = BufWriter::with_capacity(
-        256 * 1024,
-        Box::new(match cli.out {
-            Some(p) => Box::new(File::create(p).unwrap()) as Box<dyn Write>,
-            None => Box::new(std::io::stdout().lock()),
-        }),
-    );
     let mut f = cli.file.map(|p| BufReader::new(File::open(p).unwrap()));
-    let mut buf = String::new();
+    let mut dbuf = String::new();
     let mut fbuf = String::new();
-    let mut dbn = db_next(&mut hr, &mut buf)?;
-    let mut fin = file_next(&mut f, &mut buf).unwrap();
+    let mut dbn = db_next(&mut hr, &mut dbuf)?;
+    let mut fin = file_next(&mut f, &mut fbuf).unwrap();
     let mut d = Dedup {
         l: false,
         b: String::new(),
+        w: BufWriter::with_capacity(
+            256 * 1024,
+            Box::new(match cli.out {
+                Some(p) => Box::new(File::create(p).unwrap()) as Box<dyn Write>,
+                None => Box::new(std::io::stdout().lock()),
+            }),
+        ),
     };
     while dbn || fin {
         if fin && !dbn {
-            d.put(&mut out, &mut fbuf);
+            d.put(&mut fbuf);
             fin = file_next(&mut f, &mut fbuf).unwrap();
             continue;
         }
         if dbn && !fin {
-            d.put(&mut out, &mut buf);
-            dbn = db_next(&mut hr, &mut buf)?;
+            d.put(&mut dbuf);
+            dbn = db_next(&mut hr, &mut dbuf)?;
             continue;
         }
-        let c = get_prefix(&buf).cmp(get_prefix(&fbuf));
+        let c = get_prefix(&dbuf).cmp(get_prefix(&fbuf));
         if c >= Equal {
-            d.put(&mut out, &mut fbuf);
+            d.put(&mut fbuf);
             fin = file_next(&mut f, &mut fbuf).unwrap();
         }
         if c <= Equal {
-            d.put(&mut out, &mut buf);
-            dbn = db_next(&mut hr, &mut buf)?;
+            d.put(&mut dbuf);
+            dbn = db_next(&mut hr, &mut dbuf)?;
         }
     }
-    if d.l {
-        out.write(d.b.as_bytes()).unwrap();
-    }
+    d.end();
     Ok(())
 }
