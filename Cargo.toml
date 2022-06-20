@@ -1,0 +1,18 @@
+[package]
+name = "boo"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rusqlite = "0.27.0"
+clap = { version = "3.2.5", default_features = false, features = ["std", "derive"] }
+chrono = { version = "0.4", default_features = false }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+rusqlite = { version = "0.27.0", features = [ "bundled" ] }
+
+[profile.release]
+opt-level = 3
+lto = true
+panic = 'abort'
+codegen-units = 1
