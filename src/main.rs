@@ -1,12 +1,11 @@
 use clap::Parser;
-use core::cmp::Ordering::*;
 use rusqlite::{Connection, OpenFlags, Rows};
-use std::cmp::Ord;
+use std::cmp::{Ord, Ordering};
 use std::error;
 use std::fs::File;
 use std::io::prelude::*;
 use std::io::{self, BufReader, BufWriter};
-use std::mem::swap;
+use std::mem::{drop, swap};
 use std::path::PathBuf;
 use tempfile::NamedTempFile;
 
@@ -60,10 +59,9 @@ fn db_next(r: &mut Rows, e: &mut Entry) -> rusqlite::Result<bool> {
 }
 
 fn file_next(r: &mut Option<impl BufRead>, e: &mut Entry) -> io::Result<bool> {
-    r.as_mut().map_or(Ok(false), |r| match r.read_line(&mut e.str) {
-        Ok(0) => Ok(false),
-        Err(e) => Err(e),
-        Ok(_) => {
+    r.as_mut().map_or(Ok(false), |r| match r.read_line(&mut e.str)? {
+        0 => Ok(false),
+        _ => {
             e.pre = e.str.find('\t').unwrap_or(e.str.len() - 1);
             Ok(true)
         }
@@ -71,30 +69,19 @@ fn file_next(r: &mut Option<impl BufRead>, e: &mut Entry) -> io::Result<bool> {
 }
 
 struct Dedup<W> {
-    l: bool,
     e: Entry,
     w: W,
 }
 
 impl<W: Write> Dedup<W> {
-    fn new(w: W) -> Dedup<W> { Dedup { l: false, e: Entry::new(), w } }
+    fn new(w: W) -> Dedup<W> { Dedup { e: Entry::new(), w } }
 
     fn put(&mut self, e: &mut Entry) -> io::Result<()> {
         if e.prefix() != self.e.prefix() {
-            if self.l {
-                self.w.write(self.e.str.as_bytes())?;
-            }
-            self.l = true;
+            self.w.write(e.str.as_bytes())?;
             swap(e, &mut self.e);
         }
         e.str.clear();
-        Ok(())
-    }
-
-    fn end(&mut self) -> io::Result<()> {
-        if self.l {
-            self.w.write(self.e.str.as_bytes())?;
-        }
         Ok(())
     }
 }
@@ -141,20 +128,19 @@ fn main() -> Result<(), Box<dyn error::Error>> {
             continue;
         }
         let c = dbe.prefix().cmp(fie.prefix());
-        if c >= Equal {
+        if c >= Ordering::Equal {
             d.put(&mut fie)?;
             fin = file_next(&mut f, &mut fie).unwrap();
         }
-        if c <= Equal {
+        if c <= Ordering::Equal {
             d.put(&mut dbe)?;
             dbn = db_next(&mut hr, &mut dbe)?;
         }
     }
-    d.end()?;
-    std::mem::drop(d);
+    drop(d);
     if let Some(f) = tmp {
         let (f, p) = f.keep()?;
-        std::mem::drop(f);
+        drop(f);
         std::fs::rename(p, cli.merge.as_ref().unwrap())?;
     };
     Ok(())
