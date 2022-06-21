@@ -116,7 +116,7 @@ fn run(cli: &CLI, out: impl Write) -> Result<(), Box<dyn error::Error>> {
     let mut fie = Entry::new();
     let mut dbn = db_next(&mut hr, &mut dbe)?;
     let mut fin = file_next(&mut f, &mut fie)?;
-    let mut d = Dedup::new(BufWriter::with_capacity(256 * 1024, out));
+    let mut d = Dedup::new(BufWriter::with_capacity(64 * 1024, out));
     while dbn || fin {
         if fin && !dbn {
             d.put(&mut fie)?;
