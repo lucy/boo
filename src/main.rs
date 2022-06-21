@@ -119,7 +119,7 @@ fn main() -> Result<(), Box<dyn error::Error>> {
     while dbn || fin {
         if fin && !dbn {
             d.put(&mut fie)?;
-            fin = file_next(&mut f, &mut fie).unwrap();
+            fin = file_next(&mut f, &mut fie)?;
             continue;
         }
         if dbn && !fin {
@@ -130,7 +130,7 @@ fn main() -> Result<(), Box<dyn error::Error>> {
         let c = dbe.prefix().cmp(fie.prefix());
         if c >= Ordering::Equal {
             d.put(&mut fie)?;
-            fin = file_next(&mut f, &mut fie).unwrap();
+            fin = file_next(&mut f, &mut fie)?;
         }
         if c <= Ordering::Equal {
             d.put(&mut dbe)?;
