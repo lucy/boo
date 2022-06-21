@@ -1,10 +1,9 @@
 use clap::Parser;
 use rusqlite::{Connection, OpenFlags, Rows};
-use std::cmp::{Ord, Ordering};
+use std::cmp::Ordering::*;
 use std::error;
 use std::fs::File;
-use std::io::prelude::*;
-use std::io::{self, BufReader, BufWriter};
+use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::mem::{drop, swap};
 use std::path::PathBuf;
 use tempfile::NamedTempFile;
@@ -43,14 +42,14 @@ fn db_next(r: &mut Rows, e: &mut EntryBuf) -> rusqlite::Result<bool> {
         Some(row) => row,
         None => return Ok(false),
     };
-    let p_url = row.get_ref(1)?;
-    let p_title = row.get_ref(2)?;
-    let v_visit_date: u64 = row.get(7)?;
-    timefmt::usec(v_visit_date, &mut e.str);
+    let url = row.get_ref(1)?;
+    let title = row.get_ref(2)?;
+    let date: u64 = row.get(7)?;
+    timefmt::usec(date, &mut e.str);
     e.str.push(' ');
-    e.str.push_str(p_url.as_str()?);
+    e.str.push_str(url.as_str()?);
     e.pre = e.str.len();
-    if let Ok(title) = p_title.as_str() {
+    if let Ok(title) = title.as_str() {
         e.str.push('\t');
         e.str.push_str(title);
     }
@@ -115,22 +114,12 @@ fn main() -> Result<(), Box<dyn error::Error>> {
     let mut dbn = db_next(&mut hr, &mut dbe)?;
     let mut fin = file_next(&mut f, &mut fie)?;
     while dbn || fin {
-        if fin && !dbn {
-            d.put(&mut fie)?;
-            fin = file_next(&mut f, &mut fie)?;
-            continue;
-        }
-        if dbn && !fin {
-            d.put(&mut dbe)?;
-            dbn = db_next(&mut hr, &mut dbe)?;
-            continue;
-        }
-        let c = dbe.prefix().cmp(fie.prefix());
-        if c >= Ordering::Equal {
+        let c = if dbn && fin { dbe.prefix().cmp(fie.prefix()) } else { Equal };
+        if fin && (!dbn || c >= Equal) {
             d.put(&mut fie)?;
             fin = file_next(&mut f, &mut fie)?;
         }
-        if c <= Ordering::Equal {
+        if dbn && (!fin || c <= Equal) {
             d.put(&mut dbe)?;
             dbn = db_next(&mut hr, &mut dbe)?;
         }
