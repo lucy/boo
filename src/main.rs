@@ -10,17 +10,20 @@ use tempfile::NamedTempFile;
 mod timefmt;
 
 #[derive(Parser)]
-#[clap(help_template("{usage-heading} {usage}\n\n{all-args}"))]
+#[clap(help_template = "{usage-heading} {usage}\n\n{all-args}")]
 struct CLI {
     /// path to places.sqlite db
     #[clap(value_parser)]
     db: PathBuf,
+
     /// previous export to merge with
     #[clap(value_parser, value_name = "FILE")]
     merge: Option<PathBuf>,
+
     /// output file
     #[clap(short, long, value_parser, value_name = "FILE")]
     output: Option<PathBuf>,
+
     /// overwrite merged export file
     #[clap(short, long, requires = "merge", conflicts_with = "output")]
     in_place: bool,
@@ -41,9 +44,9 @@ fn db_next(r: &mut Rows, e: &mut EntryBuf) -> rusqlite::Result<bool> {
         Some(row) => row,
         None => return Ok(false),
     };
-    let url = row.get_ref(1)?;
-    let title = row.get_ref(2)?;
-    let date: u64 = row.get(7)?;
+    let url = row.get_ref(0)?;
+    let title = row.get_ref(1)?;
+    let date: u64 = row.get(2)?;
     timefmt::usec(date, &mut e.str);
     e.str.push(' ');
     e.str.push_str(url.as_str()?);
@@ -89,8 +92,7 @@ fn main() -> Result<(), Box<dyn error::Error>> {
     let c = Connection::open_with_flags(cli.db.as_path(), OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     let mut hs = c.prepare(
         r#"
-        SELECT p.id, p.url, p.title, p.description, p.preview_image_url,
-            v.id, v.from_visit, v.visit_date, v.visit_type
+        SELECT p.url, p.title, v.visit_date
         FROM moz_places p
         JOIN moz_historyvisits v
             ON p.id = v.place_id
@@ -125,7 +127,7 @@ fn main() -> Result<(), Box<dyn error::Error>> {
     drop(d);
     if let Some(f) = tmp {
         let (f, p) = f.keep()?;
-        drop(f);
+        drop(f); // have to close file before renaming on windows
         std::fs::rename(p, cli.merge.as_ref().unwrap())?;
     };
     Ok(())
