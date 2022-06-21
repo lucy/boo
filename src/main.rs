@@ -99,7 +99,8 @@ impl<W: Write> Dedup<W> {
     }
 }
 
-fn run(cli: &CLI, out: impl Write) -> Result<(), Box<dyn error::Error>> {
+fn main() -> Result<(), Box<dyn error::Error>> {
+    let cli = CLI::parse();
     let c = Connection::open_with_flags(cli.db.as_path(), OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     let mut hs = c.prepare(
         r#"
@@ -116,7 +117,18 @@ fn run(cli: &CLI, out: impl Write) -> Result<(), Box<dyn error::Error>> {
     let mut fie = Entry::new();
     let mut dbn = db_next(&mut hr, &mut dbe)?;
     let mut fin = file_next(&mut f, &mut fie)?;
-    let mut d = Dedup::new(BufWriter::with_capacity(64 * 1024, out));
+    let mut tmp = None;
+    let mut d = Dedup::new(BufWriter::with_capacity(
+        64 * 1024,
+        match cli.output {
+            Some(ref p) => Box::new(File::create(p)?) as Box<dyn Write>,
+            None if cli.in_place => {
+                tmp = Some(NamedTempFile::new_in(cli.merge.as_ref().unwrap().parent().unwrap())?);
+                Box::new(tmp.as_mut().unwrap())
+            }
+            None => Box::new(std::io::stdout().lock()),
+        },
+    ));
     while dbn || fin {
         if fin && !dbn {
             d.put(&mut fie)?;
@@ -139,24 +151,7 @@ fn run(cli: &CLI, out: impl Write) -> Result<(), Box<dyn error::Error>> {
         }
     }
     d.end()?;
-    Ok(())
-}
-
-fn main() -> Result<(), Box<dyn error::Error>> {
-    let cli = CLI::parse();
-    let mut tmp = None;
-    run(
-        &cli,
-        match cli.output {
-            Some(ref p) => Box::new(File::create(p)?) as Box<dyn Write>,
-            None if cli.in_place => {
-                let f = NamedTempFile::new_in(cli.merge.as_ref().unwrap().parent().unwrap())?;
-                tmp = Some(f);
-                Box::new(tmp.as_mut().unwrap())
-            }
-            None => Box::new(std::io::stdout().lock()),
-        },
-    )?;
+    std::mem::drop(d);
     if let Some(f) = tmp {
         let (f, p) = f.keep()?;
         std::mem::drop(f);
