@@ -8,6 +8,7 @@ use std::io::prelude::*;
 use std::io::{self, BufReader, BufWriter};
 use std::mem::swap;
 use std::path::PathBuf;
+use tempfile::NamedTempFile;
 
 mod timefmt;
 
@@ -23,6 +24,9 @@ struct CLI {
     /// output file
     #[clap(short, long, value_parser, value_name = "FILE")]
     output: Option<PathBuf>,
+    /// overwrite merged export file
+    #[clap(short, long, requires = "merge", conflicts_with = "output")]
+    in_place: bool,
 }
 
 struct Entry {
@@ -95,9 +99,8 @@ impl<W: Write> Dedup<W> {
     }
 }
 
-fn main() -> Result<(), Box<dyn error::Error>> {
-    let cli = CLI::parse();
-    let c = Connection::open_with_flags(cli.db, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+fn run(cli: &CLI, out: impl Write) -> Result<(), Box<dyn error::Error>> {
+    let c = Connection::open_with_flags(cli.db.as_path(), OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     let mut hs = c.prepare(
         r#"
         SELECT p.id, p.url, p.title, p.description, p.preview_image_url,
@@ -108,18 +111,12 @@ fn main() -> Result<(), Box<dyn error::Error>> {
         ORDER BY v.visit_date, p.url"#,
     )?;
     let mut hr = hs.query([])?;
-    let mut f = if let Some(p) = cli.merge { Some(BufReader::new(File::open(p)?)) } else { None };
+    let mut f = cli.merge.as_ref().map(|p| File::open(p).map(BufReader::new)).transpose()?;
     let mut dbe = Entry::new();
     let mut fie = Entry::new();
     let mut dbn = db_next(&mut hr, &mut dbe)?;
-    let mut fin = file_next(&mut f, &mut fie).unwrap();
-    let mut d = Dedup::new(BufWriter::with_capacity(
-        256 * 1024,
-        Box::new(match cli.output {
-            Some(p) => Box::new(File::create(p).unwrap()) as Box<dyn Write>,
-            None => Box::new(std::io::stdout().lock()),
-        }),
-    ));
+    let mut fin = file_next(&mut f, &mut fie)?;
+    let mut d = Dedup::new(BufWriter::with_capacity(256 * 1024, out));
     while dbn || fin {
         if fin && !dbn {
             d.put(&mut fie)?;
@@ -142,5 +139,28 @@ fn main() -> Result<(), Box<dyn error::Error>> {
         }
     }
     d.end()?;
+    Ok(())
+}
+
+fn main() -> Result<(), Box<dyn error::Error>> {
+    let cli = CLI::parse();
+    let mut tmp = None;
+    run(
+        &cli,
+        match cli.output {
+            Some(ref p) => Box::new(File::create(p)?) as Box<dyn Write>,
+            None if cli.in_place => {
+                let f = NamedTempFile::new_in(cli.merge.as_ref().unwrap().parent().unwrap())?;
+                tmp = Some(f);
+                Box::new(tmp.as_mut().unwrap())
+            }
+            None => Box::new(std::io::stdout().lock()),
+        },
+    )?;
+    if let Some(f) = tmp {
+        let (f, p) = f.keep()?;
+        std::mem::drop(f);
+        std::fs::rename(p, cli.merge.as_ref().unwrap())?;
+    };
     Ok(())
 }
