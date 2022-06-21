@@ -1,7 +1,8 @@
 use clap::Parser;
 use core::cmp::Ordering::*;
-use rusqlite::{Connection, OpenFlags, Result, Rows};
+use rusqlite::{Connection, OpenFlags, Rows};
 use std::cmp::Ord;
+use std::error;
 use std::fs::File;
 use std::io::prelude::*;
 use std::io::{self, BufReader, BufWriter};
@@ -34,7 +35,7 @@ impl Entry {
     fn prefix(&self) -> &str { &self.str[..self.pre] }
 }
 
-fn db_next(r: &mut Rows, e: &mut Entry) -> Result<bool> {
+fn db_next(r: &mut Rows, e: &mut Entry) -> rusqlite::Result<bool> {
     let row = match r.next()? {
         Some(row) => row,
         None => return Ok(false),
@@ -74,25 +75,27 @@ struct Dedup<W> {
 impl<W: Write> Dedup<W> {
     fn new(w: W) -> Dedup<W> { Dedup { l: false, e: Entry::new(), w } }
 
-    fn put(&mut self, e: &mut Entry) {
+    fn put(&mut self, e: &mut Entry) -> io::Result<()> {
         if e.prefix() != self.e.prefix() {
             if self.l {
-                self.w.write(self.e.str.as_bytes()).unwrap();
+                self.w.write(self.e.str.as_bytes())?;
             }
             self.l = true;
             swap(e, &mut self.e);
         }
         e.str.clear();
+        Ok(())
     }
 
-    fn end(&mut self) {
+    fn end(&mut self) -> io::Result<()> {
         if self.l {
-            self.w.write(self.e.str.as_bytes()).unwrap();
+            self.w.write(self.e.str.as_bytes())?;
         }
+        Ok(())
     }
 }
 
-fn main() -> Result<()> {
+fn main() -> Result<(), Box<dyn error::Error>> {
     let cli = CLI::parse();
     let c = Connection::open_with_flags(cli.db, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     let mut hs = c.prepare(
@@ -105,7 +108,7 @@ fn main() -> Result<()> {
         ORDER BY v.visit_date, p.url"#,
     )?;
     let mut hr = hs.query([])?;
-    let mut f = cli.merge.map(|p| BufReader::new(File::open(p).unwrap()));
+    let mut f = if let Some(p) = cli.merge { Some(BufReader::new(File::open(p)?)) } else { None };
     let mut dbe = Entry::new();
     let mut fie = Entry::new();
     let mut dbn = db_next(&mut hr, &mut dbe)?;
@@ -119,25 +122,25 @@ fn main() -> Result<()> {
     ));
     while dbn || fin {
         if fin && !dbn {
-            d.put(&mut fie);
+            d.put(&mut fie)?;
             fin = file_next(&mut f, &mut fie).unwrap();
             continue;
         }
         if dbn && !fin {
-            d.put(&mut dbe);
+            d.put(&mut dbe)?;
             dbn = db_next(&mut hr, &mut dbe)?;
             continue;
         }
         let c = dbe.prefix().cmp(fie.prefix());
         if c >= Equal {
-            d.put(&mut fie);
+            d.put(&mut fie)?;
             fin = file_next(&mut f, &mut fie).unwrap();
         }
         if c <= Equal {
-            d.put(&mut dbe);
+            d.put(&mut dbe)?;
             dbn = db_next(&mut hr, &mut dbe)?;
         }
     }
-    d.end();
+    d.end()?;
     Ok(())
 }
