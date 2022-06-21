@@ -1,6 +1,5 @@
 use clap::Parser;
 use rusqlite::{Connection, OpenFlags, Rows};
-use std::cmp::Ordering::*;
 use std::error;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
@@ -114,12 +113,11 @@ fn main() -> Result<(), Box<dyn error::Error>> {
     let mut dbn = db_next(&mut hr, &mut dbe)?;
     let mut fin = file_next(&mut f, &mut fie)?;
     while dbn || fin {
-        let c = if dbn && fin { dbe.prefix().cmp(fie.prefix()) } else { Equal };
-        if fin && (!dbn || c >= Equal) {
+        if fin && (!dbn || fie.prefix() <= dbe.prefix()) {
             d.put(&mut fie)?;
             fin = file_next(&mut f, &mut fie)?;
         }
-        if dbn && (!fin || c <= Equal) {
+        if dbn && (!fin || dbe.prefix() < fie.prefix()) {
             d.put(&mut dbe)?;
             dbn = db_next(&mut hr, &mut dbe)?;
         }
