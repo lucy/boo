@@ -1,67 +1,40 @@
-use chrono::Datelike;
-use chrono::NaiveDateTime;
-use chrono::Timelike;
 use clap::Parser;
 use core::cmp::Ordering::*;
 use rusqlite::{Connection, OpenFlags, Result, Rows};
 use std::cmp::Ord;
 use std::fs::File;
-use std::io::{self, prelude::*, BufReader, BufWriter};
+use std::io::prelude::*;
+use std::io::{self, BufReader, BufWriter};
 use std::mem::swap;
 use std::path::PathBuf;
 
+mod timefmt;
+
 #[derive(Parser)]
+#[clap(help_template("{usage-heading} {usage}\n\n{all-args}"))]
 struct CLI {
     /// path to places.sqlite db
     #[clap(value_parser)]
     db: PathBuf,
     /// previous export to merge with
-    #[clap(value_parser)]
-    file: Option<PathBuf>,
+    #[clap(value_parser, value_name = "FILE")]
+    merge: Option<PathBuf>,
     /// output file
-    #[clap(short, value_parser)]
-    out: Option<PathBuf>,
+    #[clap(short, long, value_parser, value_name = "FILE")]
+    output: Option<PathBuf>,
 }
 
-fn itoa(buf: &mut String, mut i: u32, mut w: i32) {
-    let mut b = [0u8; 4];
-    let mut bp = b.len();
-    while i > 0 || w > 0 {
-        w -= 1;
-        bp -= 1;
-        b[bp] = b'0' + (i % 10) as u8;
-        i /= 10;
-    }
-    buf.push_str(unsafe { std::str::from_utf8_unchecked(&b[bp..]) });
+struct Entry {
+    str: String,
+    pre: usize,
 }
 
-fn rfc3339(dt: &NaiveDateTime, b: &mut String) {
-    let d = dt.date();
-    itoa(b, d.year() as u32, 4);
-    b.push('-');
-    itoa(b, d.month(), 2);
-    b.push('-');
-    itoa(b, d.day(), 2);
-    b.push(' ');
-    let t = dt.time();
-    itoa(b, t.hour(), 2);
-    b.push(':');
-    itoa(b, t.minute(), 2);
-    b.push(':');
-    itoa(b, t.second(), 2);
-    b.push('.');
-    itoa(b, t.nanosecond() / 1_000_000, 3);
-    b.push('Z');
+impl Entry {
+    fn new() -> Self { Entry { str: String::new(), pre: 0 } }
+    fn prefix(&self) -> &str { &self.str[..self.pre] }
 }
 
-fn format_usec(usec: u64, b: &mut String) {
-    let secs = usec / 1_000_000;
-    let nsec = (usec - secs * 1_000_000) * 1_000;
-    let dt = NaiveDateTime::from_timestamp(secs as i64, nsec as u32);
-    rfc3339(&dt, b);
-}
-
-fn db_next(r: &mut Rows, buf: &mut String) -> Result<bool> {
+fn db_next(r: &mut Rows, e: &mut Entry) -> Result<bool> {
     let row = match r.next()? {
         Some(row) => row,
         None => return Ok(false),
@@ -69,52 +42,52 @@ fn db_next(r: &mut Rows, buf: &mut String) -> Result<bool> {
     let p_url = row.get_ref(1)?;
     let p_title = row.get_ref(2)?;
     let v_visit_date: u64 = row.get(7)?;
-    format_usec(v_visit_date, buf);
-    buf.push(' ');
-    buf.push_str(p_url.as_str()?);
+    timefmt::usec(v_visit_date, &mut e.str);
+    e.str.push(' ');
+    e.str.push_str(p_url.as_str()?);
+    e.pre = e.str.len();
     if let Ok(title) = p_title.as_str() {
-        buf.push('\t');
-        buf.push_str(title);
+        e.str.push('\t');
+        e.str.push_str(title);
     }
-    buf.push('\n');
+    e.str.push('\n');
     Ok(true)
 }
 
-fn file_next(r: &mut Option<impl BufRead>, buf: &mut String) -> io::Result<bool> {
-    r.as_mut().map_or(Ok(false), |r| match r.read_line(buf) {
+fn file_next(r: &mut Option<impl BufRead>, e: &mut Entry) -> io::Result<bool> {
+    r.as_mut().map_or(Ok(false), |r| match r.read_line(&mut e.str) {
         Ok(0) => Ok(false),
-        Ok(_) => Ok(true),
         Err(e) => Err(e),
+        Ok(_) => {
+            e.pre = e.str.find('\t').unwrap_or(e.str.len() - 1);
+            Ok(true)
+        }
     })
 }
 
 struct Dedup<W> {
     l: bool,
-    b: String,
+    e: Entry,
     w: W,
 }
 
-fn get_prefix(s: &str) -> &str {
-    if let Some(i) = s.find('\t') {
-        return &s[..i];
-    }
-    return s;
-}
-
 impl<W: Write> Dedup<W> {
-    fn put(&mut self, b: &mut String) {
-        if get_prefix(b) != get_prefix(&self.b) {
+    fn new(w: W) -> Dedup<W> { Dedup { l: false, e: Entry::new(), w } }
+
+    fn put(&mut self, e: &mut Entry) {
+        if e.prefix() != self.e.prefix() {
             if self.l {
-                self.w.write(self.b.as_bytes()).unwrap();
+                self.w.write(self.e.str.as_bytes()).unwrap();
             }
             self.l = true;
-            swap(b, &mut self.b);
+            swap(e, &mut self.e);
         }
-        b.clear();
+        e.str.clear();
     }
+
     fn end(&mut self) {
         if self.l {
-            self.w.write(self.b.as_bytes()).unwrap();
+            self.w.write(self.e.str.as_bytes()).unwrap();
         }
     }
 }
@@ -132,41 +105,37 @@ fn main() -> Result<()> {
         ORDER BY v.visit_date, p.url"#,
     )?;
     let mut hr = hs.query([])?;
-    let mut f = cli.file.map(|p| BufReader::new(File::open(p).unwrap()));
-    let mut dbuf = String::new();
-    let mut fbuf = String::new();
-    let mut dbn = db_next(&mut hr, &mut dbuf)?;
-    let mut fin = file_next(&mut f, &mut fbuf).unwrap();
-    let mut d = Dedup {
-        l: false,
-        b: String::new(),
-        w: BufWriter::with_capacity(
-            256 * 1024,
-            Box::new(match cli.out {
-                Some(p) => Box::new(File::create(p).unwrap()) as Box<dyn Write>,
-                None => Box::new(std::io::stdout().lock()),
-            }),
-        ),
-    };
+    let mut f = cli.merge.map(|p| BufReader::new(File::open(p).unwrap()));
+    let mut dbe = Entry::new();
+    let mut fie = Entry::new();
+    let mut dbn = db_next(&mut hr, &mut dbe)?;
+    let mut fin = file_next(&mut f, &mut fie).unwrap();
+    let mut d = Dedup::new(BufWriter::with_capacity(
+        256 * 1024,
+        Box::new(match cli.output {
+            Some(p) => Box::new(File::create(p).unwrap()) as Box<dyn Write>,
+            None => Box::new(std::io::stdout().lock()),
+        }),
+    ));
     while dbn || fin {
         if fin && !dbn {
-            d.put(&mut fbuf);
-            fin = file_next(&mut f, &mut fbuf).unwrap();
+            d.put(&mut fie);
+            fin = file_next(&mut f, &mut fie).unwrap();
             continue;
         }
         if dbn && !fin {
-            d.put(&mut dbuf);
-            dbn = db_next(&mut hr, &mut dbuf)?;
+            d.put(&mut dbe);
+            dbn = db_next(&mut hr, &mut dbe)?;
             continue;
         }
-        let c = get_prefix(&dbuf).cmp(get_prefix(&fbuf));
+        let c = dbe.prefix().cmp(fie.prefix());
         if c >= Equal {
-            d.put(&mut fbuf);
-            fin = file_next(&mut f, &mut fbuf).unwrap();
+            d.put(&mut fie);
+            fin = file_next(&mut f, &mut fie).unwrap();
         }
         if c <= Equal {
-            d.put(&mut dbuf);
-            dbn = db_next(&mut hr, &mut dbuf)?;
+            d.put(&mut dbe);
+            dbn = db_next(&mut hr, &mut dbe)?;
         }
     }
     d.end();
