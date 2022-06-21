@@ -28,17 +28,17 @@ struct CLI {
     in_place: bool,
 }
 
-struct Entry {
+struct EntryBuf {
     str: String,
     pre: usize,
 }
 
-impl Entry {
-    fn new() -> Self { Entry { str: String::new(), pre: 0 } }
+impl EntryBuf {
+    fn new() -> Self { EntryBuf { str: String::new(), pre: 0 } }
     fn prefix(&self) -> &str { &self.str[..self.pre] }
 }
 
-fn db_next(r: &mut Rows, e: &mut Entry) -> rusqlite::Result<bool> {
+fn db_next(r: &mut Rows, e: &mut EntryBuf) -> rusqlite::Result<bool> {
     let row = match r.next()? {
         Some(row) => row,
         None => return Ok(false),
@@ -58,7 +58,7 @@ fn db_next(r: &mut Rows, e: &mut Entry) -> rusqlite::Result<bool> {
     Ok(true)
 }
 
-fn file_next(r: &mut Option<impl BufRead>, e: &mut Entry) -> io::Result<bool> {
+fn file_next(r: &mut Option<impl BufRead>, e: &mut EntryBuf) -> io::Result<bool> {
     r.as_mut().map_or(Ok(false), |r| match r.read_line(&mut e.str)? {
         0 => Ok(false),
         _ => {
@@ -69,14 +69,14 @@ fn file_next(r: &mut Option<impl BufRead>, e: &mut Entry) -> io::Result<bool> {
 }
 
 struct Dedup<W> {
-    e: Entry,
+    e: EntryBuf,
     w: W,
 }
 
 impl<W: Write> Dedup<W> {
-    fn new(w: W) -> Dedup<W> { Dedup { e: Entry::new(), w } }
+    fn new(w: W) -> Dedup<W> { Dedup { e: EntryBuf::new(), w } }
 
-    fn put(&mut self, e: &mut Entry) -> io::Result<()> {
+    fn put(&mut self, e: &mut EntryBuf) -> io::Result<()> {
         if e.prefix() != self.e.prefix() {
             self.w.write(e.str.as_bytes())?;
             swap(e, &mut self.e);
@@ -99,23 +99,21 @@ fn main() -> Result<(), Box<dyn error::Error>> {
         ORDER BY v.visit_date, p.url"#,
     )?;
     let mut hr = hs.query([])?;
+    let mut tmp = None;
+    let out = match cli.output {
+        Some(ref p) => Box::new(File::create(p)?) as Box<dyn Write>,
+        None if cli.in_place => {
+            tmp = Some(NamedTempFile::new_in(cli.merge.as_ref().unwrap().parent().unwrap())?);
+            Box::new(tmp.as_mut().unwrap())
+        }
+        None => Box::new(std::io::stdout().lock()),
+    };
+    let mut d = Dedup::new(BufWriter::with_capacity(64 * 1024, out));
     let mut f = cli.merge.as_ref().map(|p| File::open(p).map(BufReader::new)).transpose()?;
-    let mut dbe = Entry::new();
-    let mut fie = Entry::new();
+    let mut dbe = EntryBuf::new();
+    let mut fie = EntryBuf::new();
     let mut dbn = db_next(&mut hr, &mut dbe)?;
     let mut fin = file_next(&mut f, &mut fie)?;
-    let mut tmp = None;
-    let mut d = Dedup::new(BufWriter::with_capacity(
-        64 * 1024,
-        match cli.output {
-            Some(ref p) => Box::new(File::create(p)?) as Box<dyn Write>,
-            None if cli.in_place => {
-                tmp = Some(NamedTempFile::new_in(cli.merge.as_ref().unwrap().parent().unwrap())?);
-                Box::new(tmp.as_mut().unwrap())
-            }
-            None => Box::new(std::io::stdout().lock()),
-        },
-    ));
     while dbn || fin {
         if fin && !dbn {
             d.put(&mut fie)?;
