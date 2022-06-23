@@ -27,6 +27,10 @@ struct CLI {
     /// output to input export
     #[clap(short, long, requires = "merge", conflicts_with = "output")]
     in_place: bool,
+
+    /// print help
+    #[clap(short, long)]
+    help: bool,
 }
 
 struct EntryBuf {
