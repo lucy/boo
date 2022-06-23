@@ -16,7 +16,7 @@ struct CLI {
     #[clap(value_parser)]
     db: PathBuf,
 
-    /// previous export to merge with
+    /// merge with previous export
     #[clap(value_parser, value_name = "FILE")]
     merge: Option<PathBuf>,
 
@@ -24,7 +24,7 @@ struct CLI {
     #[clap(short, long, value_parser, value_name = "FILE")]
     output: Option<PathBuf>,
 
-    /// overwrite merged export file
+    /// output to input export
     #[clap(short, long, requires = "merge", conflicts_with = "output")]
     in_place: bool,
 }
