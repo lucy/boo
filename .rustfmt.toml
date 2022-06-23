@@ -1,0 +1,6 @@
+combine_control_expr = true
+fn_single_line = true
+imports_granularity = "module"
+unstable_features = true
+use_small_heuristics = "Max"
+#version = "Two"
