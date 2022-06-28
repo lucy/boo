@@ -11,7 +11,7 @@ mod timefmt;
 
 #[derive(Parser)]
 #[clap(help_template = "{usage-heading} {usage}\n\n{all-args}")]
-struct CLI {
+struct Cli {
     /// path to places.sqlite db
     #[clap(value_parser)]
     db: PathBuf,
@@ -83,7 +83,7 @@ impl<W: Write> Dedup<W> {
 
     fn put(&mut self, e: &mut EntryBuf) -> io::Result<()> {
         if e.prefix() != self.e.prefix() {
-            self.w.write(e.str.as_bytes())?;
+            self.w.write_all(e.str.as_bytes())?;
             swap(e, &mut self.e);
         }
         e.str.clear();
@@ -92,7 +92,7 @@ impl<W: Write> Dedup<W> {
 }
 
 fn main() -> Result<(), Box<dyn error::Error>> {
-    let cli = CLI::parse();
+    let cli = Cli::parse();
     let c = Connection::open_with_flags(cli.db.as_path(), OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     let mut hs = c.prepare(
         r#"
